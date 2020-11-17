@@ -461,7 +461,7 @@ void Server::cron() {
   while (!stop_) {
     updateCachedTime();
     // check every 20s (use 20s instead of 60s so that cron will execute in critical condition)
-    if (counter != 0 && counter % 200 == 0) {
+    if (is_loading_ == false && counter != 0 && counter % 200 == 0) {
       auto t = std::time(nullptr);
       auto now = std::localtime(&t);
       // disable compaction cron when the compaction checker was enabled
@@ -477,12 +477,12 @@ void Server::cron() {
       }
     }
     // check every minutes
-    if (counter != 0 && counter % 600 == 0) {
+    if (is_loading_ == false && counter != 0 && counter % 600 == 0) {
       Status s = AsyncPurgeOldBackups();
       LOG(INFO) << "[server] Schedule to purge old backups, result: " << s.Msg();
     }
     // check every 30 minutes
-    if (counter != 0 && counter % 18000 == 0) {
+    if (is_loading_ == false && counter != 0 && counter % 18000 == 0) {
       Status s = dynamicResizeBlockAndSST();
       LOG(INFO) << "[server] Schedule to dynamic resize block and sst, result: " << s.Msg();
     }
@@ -936,12 +936,15 @@ Status Server::AsyncScanDBSize(const std::string &ns) {
 }
 
 Status Server::dynamicResizeBlockAndSST() {
+  // the db is closing, don't use DB and cf_handles
+  if (!storage_->IncrDBRefs().IsOK()) return Status(Status::NotOK, "loading in-progress"); ;
   auto total_size = storage_->GetTotalSize(kDefaultNamespace);
   uint64_t total_keys = 0, estimate_keys = 0;
   for (const auto &cf_handle : *storage_->GetCFHandles()) {
     storage_->GetDB()->GetIntProperty(cf_handle, "rocksdb.estimate-num-keys", &estimate_keys);
     total_keys += estimate_keys;
   }
+  storage_->DecrDBRefs();
   if (total_size == 0 || total_keys == 0) {
     return Status::OK();
   }
